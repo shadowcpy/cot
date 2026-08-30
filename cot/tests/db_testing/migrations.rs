@@ -1,12 +1,12 @@
 use cot::App;
-use cot::auth::user_pass::DatabaseUserApp;
+use cot::auth::user_pass::PasswordUserApp;
 use cot::db::migrations::{
     Field, Migration, MigrationDependency, MigrationEngine, Operation, SyncDynMigration,
     wrap_migrations,
 };
 use cot::db::{Auto, Database, DatabaseField, Identifier};
 use cot::session::db::SessionApp;
-use cot::test::TestDatabase;
+use cot::test::{TestDatabase, TestUser};
 use cot_macros::{model, query};
 
 const SNAPSHOT_RELATIVE_PATH: &str = "snapshots/migrations";
@@ -227,7 +227,8 @@ async fn test_migration_engine_rollback_single_app(test_db: &mut TestDatabase) {
 
 #[cot_macros::dbtest]
 async fn test_migration_rollback_unrelated_apps(test_db: &mut TestDatabase) {
-    let mut migrations = DatabaseUserApp::new().migrations();
+    let mut migrations = PasswordUserApp::<TestUser>::new().migrations();
+    migrations.extend(TestUser::migrations());
     // combine migrations from multiple apps/crates
     #[expect(trivial_casts)]
     migrations.extend(wrap_migrations(&[

@@ -69,6 +69,8 @@
 //!
 //! struct ApiProject;
 //! impl Project for ApiProject {
+//!     type User = cot::auth::NoUser;
+//!
 //! #     fn config(&self, _config_name: &str) -> cot::Result<ProjectConfig> {
 //! #         Ok(ProjectConfig::dev_default())
 //! #     }
@@ -210,6 +212,7 @@ use indexmap::IndexMap;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde_json::Value;
 
+#[cfg(feature = "db")]
 use crate::auth::Auth;
 use crate::common_types::Url;
 #[cfg(feature = "db")]
@@ -847,7 +850,8 @@ impl ApiOperationPart for Request {}
 impl ApiOperationPart for Urls {}
 impl ApiOperationPart for Method {}
 impl ApiOperationPart for Session {}
-impl ApiOperationPart for Auth {}
+#[cfg(feature = "db")]
+impl<U: crate::auth::canonical::CanonicalUser> ApiOperationPart for Auth<U> {}
 #[cfg(feature = "db")]
 impl ApiOperationPart for crate::db::Database {}
 

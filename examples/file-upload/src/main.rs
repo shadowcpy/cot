@@ -78,6 +78,8 @@ impl App for FileUploadApp {
 struct FileUploadProject;
 
 impl Project for FileUploadProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }

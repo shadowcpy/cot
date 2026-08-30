@@ -1,6 +1,5 @@
 mod migrations;
 
-use cot::auth::user_pass::DatabaseUserApp;
 use cot::cli::CliMetadata;
 use cot::config::{DatabaseConfig, ProjectConfig};
 use cot::db::migrations::SyncDynMigration;
@@ -92,6 +91,8 @@ impl App for TodoApp {
 struct TodoProject;
 
 impl Project for TodoProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }
@@ -104,7 +105,6 @@ impl Project for TodoProject {
     }
 
     fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
-        apps.register(DatabaseUserApp::new());
         apps.register_with_views(TodoApp, "");
     }
 

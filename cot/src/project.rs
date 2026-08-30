@@ -10,6 +10,8 @@
 //!
 //! struct MyProject;
 //! impl Project for MyProject {
+//!     type User = cot::auth::NoUser;
+//!
 //!     fn cli_metadata(&self) -> CliMetadata {
 //!         cot::cli::metadata!()
 //!     }
@@ -21,6 +23,7 @@
 //! }
 //! ```
 use std::convert::Infallible;
+use std::any::Any;
 use std::future::poll_fn;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -45,8 +48,11 @@ use tracing::{error, info, trace};
 
 use crate::admin::AdminModelManager;
 #[cfg(feature = "db")]
-use crate::auth::user_pass::DatabaseUserBackend;
-use crate::auth::{AuthBackend, NoAuthBackend};
+use crate::auth::AuthState;
+#[cfg(feature = "db")]
+use crate::auth::backend::AuthBackend;
+#[cfg(feature = "db")]
+use crate::auth::canonical::CanonicalUser;
 #[cfg(feature = "cache")]
 use crate::cache::Cache;
 use crate::cli::Cli;
@@ -54,7 +60,7 @@ use crate::cli::Cli;
 use crate::config::CacheConfig;
 #[cfg(feature = "db")]
 use crate::config::DatabaseConfig;
-use crate::config::{AuthBackendConfig, ProjectConfig};
+use crate::config::ProjectConfig;
 #[cfg(feature = "db")]
 use crate::db::Database;
 #[cfg(feature = "db")]
@@ -185,6 +191,8 @@ pub trait App: Send + Sync {
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn cli_metadata(&self) -> CliMetadata {
 ///         cot::cli::metadata!()
 ///     }
@@ -196,6 +204,55 @@ pub trait App: Send + Sync {
 /// }
 /// ```
 pub trait Project {
+    /// The canonical user type of the project.
+    ///
+    /// This is the type all the [`auth_backends`](Self::auth_backends)
+    /// resolve users to, and the type returned by
+    /// [`Auth::user`](crate::auth::Auth::user). It is a model defined by the
+    /// project (see [`CanonicalUser`]); if the project doesn't have users, use
+    /// [`NoUser`](crate::auth::NoUser).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::borrow::Cow;
+    ///
+    /// use cot::Project;
+    /// use cot::auth::canonical::CanonicalUser;
+    /// use cot::db::{Auto, LimitedString, model};
+    ///
+    /// #[model]
+    /// struct MyUser {
+    ///     #[model(primary_key)]
+    ///     id: Auto<i64>,
+    ///     name: LimitedString<255>,
+    /// }
+    ///
+    /// impl CanonicalUser for MyUser {
+    ///     fn display_name(&self) -> Option<Cow<'_, str>> {
+    ///         Some(Cow::Borrowed(&self.name))
+    ///     }
+    /// }
+    ///
+    /// struct MyProject;
+    /// impl Project for MyProject {
+    ///     type User = MyUser;
+    /// }
+    /// ```
+    ///
+    /// A project without users:
+    ///
+    /// ```
+    /// use cot::Project;
+    ///
+    /// struct MyProject;
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
+    /// ```
+    #[cfg(feature = "db")]
+    type User: CanonicalUser;
+
     /// Returns the metadata for the CLI.
     ///
     /// This method is used to set the name, version, authors, and description
@@ -214,6 +271,8 @@ pub trait Project {
     ///
     /// struct HelloProject;
     /// impl Project for HelloProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn cli_metadata(&self) -> CliMetadata {
     ///         cot::cli::metadata!()
     ///     }
@@ -248,6 +307,8 @@ pub trait Project {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn config(&self, config_name: &str) -> cot::Result<ProjectConfig> {
     ///         Ok(ProjectConfig::default())
     ///     }
@@ -292,6 +353,8 @@ pub trait Project {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn register_tasks(&self, cli: &mut Cli) {
     ///         cli.add_task(Frobnicate)
     ///     }
@@ -317,6 +380,8 @@ pub trait Project {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn register_apps(&self, apps: &mut AppBuilder, context: &RegisterAppsContext) {
     ///         apps.register(MyApp);
     ///     }
@@ -325,44 +390,53 @@ pub trait Project {
     #[expect(unused_variables)]
     fn register_apps(&self, apps: &mut AppBuilder, context: &RegisterAppsContext) {}
 
-    /// Sets the authentication backend to use.
+    /// Returns the authentication backends of the project.
     ///
-    /// Note that it's typically not necessary to override this method, as it
-    /// already provides a default implementation that uses the auth backend
-    /// specified in the project's configuration.
+    /// The backends check credentials and resolve them to users of the
+    /// [`User`](Self::User) type. The default implementation returns no
+    /// backends, so nobody can log in.
     ///
     /// # Examples
     ///
     /// ```
+    /// use std::borrow::Cow;
     /// use std::sync::Arc;
     ///
-    /// use cot::auth::{AuthBackend, NoAuthBackend};
+    /// use cot::Project;
+    /// use cot::auth::backend::AuthBackend;
+    /// use cot::auth::canonical::CanonicalUser;
+    /// use cot::auth::user_pass::PasswordUserBackend;
+    /// use cot::db::{Auto, LimitedString, model};
     /// use cot::project::AuthBackendContext;
-    /// use cot::{App, Project};
     ///
-    /// struct HelloProject;
-    /// impl Project for HelloProject {
-    ///     fn auth_backend(&self, context: &AuthBackendContext) -> Arc<dyn AuthBackend> {
-    ///         Arc::new(NoAuthBackend)
+    /// #[model]
+    /// struct MyUser {
+    ///     #[model(primary_key)]
+    ///     id: Auto<i64>,
+    ///     name: LimitedString<255>,
+    /// }
+    ///
+    /// impl CanonicalUser for MyUser {
+    ///     fn display_name(&self) -> Option<Cow<'_, str>> {
+    ///         Some(Cow::Borrowed(&self.name))
+    ///     }
+    /// }
+    ///
+    /// struct MyProject;
+    /// impl Project for MyProject {
+    ///     type User = MyUser;
+    ///
+    ///     fn auth_backends(&self, context: &AuthBackendContext) -> Vec<AuthBackend<MyUser>> {
+    ///         vec![AuthBackend::UsernamePassword(Arc::new(
+    ///             PasswordUserBackend::new(context.database().clone()),
+    ///         ))]
     ///     }
     /// }
     /// ```
-    fn auth_backend(&self, context: &AuthBackendContext) -> Arc<dyn AuthBackend> {
-        #[expect(trivial_casts)] // cast to Arc<dyn AuthBackend>
-        match &context.config().auth_backend {
-            AuthBackendConfig::None => Arc::new(NoAuthBackend) as Arc<dyn AuthBackend>,
-            #[cfg(feature = "db")]
-            AuthBackendConfig::Database => Arc::new(DatabaseUserBackend::new(
-                context
-                    .try_database()
-                    .expect(
-                        "Database missing when constructing database auth backend. \
-                        Make sure the database config is set up correctly or disable \
-                        authentication in the config.",
-                    )
-                    .clone(),
-            )) as Arc<dyn AuthBackend>,
-        }
+    #[cfg(feature = "db")]
+    #[expect(unused_variables)]
+    fn auth_backends(&self, context: &AuthBackendContext) -> Vec<AuthBackend<Self::User>> {
+        Vec::new()
     }
 
     /// Returns the middlewares for the project.
@@ -379,6 +453,8 @@ pub trait Project {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -426,6 +502,8 @@ pub trait Project {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn error_handler(&self) -> DynErrorPageHandler {
     ///         DynErrorPageHandler::new(error_handler)
     ///     }
@@ -446,8 +524,99 @@ pub trait Project {
 pub type RegisterAppsContext = ProjectContext<WithConfig>;
 
 /// An alias for `ProjectContext` in appropriate phase for use with the
-/// [`Project::auth_backend`] method.
+/// [`Project::auth_backends`] method.
 pub type AuthBackendContext = ProjectContext<WithCache>;
+
+/// An object-safe version of the [`Project`] trait.
+///
+/// [`Project`] can't be used as a trait object, as it has the associated
+/// [`User`](Project::User) type. This trait is implemented for every
+/// [`Project`] and erases the user type, so that the project can be stored in
+/// the [`Bootstrapper`] without making it generic.
+pub trait ErasedProject: Send {
+    /// See [`Project::cli_metadata`].
+    fn cli_metadata(&self) -> cli::CliMetadata;
+    /// See [`Project::config`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Project::config`].
+    fn config(&self, config_name: &str) -> crate::Result<ProjectConfig>;
+    /// See [`Project::register_tasks`].
+    fn register_tasks(&self, cli: &mut Cli);
+    /// See [`Project::register_apps`].
+    fn register_apps(&self, apps: &mut AppBuilder, context: &RegisterAppsContext);
+    /// See [`Project::middlewares`].
+    fn middlewares(&self, handler: RootHandlerBuilder, context: &MiddlewareContext) -> RootHandler;
+    /// See [`Project::error_handler`].
+    fn error_handler(&self) -> DynErrorPageHandler;
+    /// Creates the authentication state from [`Project::User`] and
+    /// [`Project::auth_backends`], with the user type erased.
+    ///
+    /// Returns [`None`] if the project has no database (and hence no users).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the project has auth backends, but no database.
+    #[cfg(feature = "db")]
+    fn auth_state(
+        &self,
+        context: &AuthBackendContext,
+    ) -> crate::Result<Option<Arc<dyn Any + Send + Sync>>>;
+}
+
+impl<P: Project + Send> ErasedProject for P {
+    fn cli_metadata(&self) -> cli::CliMetadata {
+        Project::cli_metadata(self)
+    }
+
+    fn config(&self, config_name: &str) -> crate::Result<ProjectConfig> {
+        Project::config(self, config_name)
+    }
+
+    fn register_tasks(&self, cli: &mut Cli) {
+        Project::register_tasks(self, cli);
+    }
+
+    fn register_apps(&self, apps: &mut AppBuilder, context: &RegisterAppsContext) {
+        Project::register_apps(self, apps, context);
+    }
+
+    fn middlewares(&self, handler: RootHandlerBuilder, context: &MiddlewareContext) -> RootHandler {
+        Project::middlewares(self, handler, context)
+    }
+
+    fn error_handler(&self) -> DynErrorPageHandler {
+        Project::error_handler(self)
+    }
+
+    #[cfg(feature = "db")]
+    fn auth_state(
+        &self,
+        context: &AuthBackendContext,
+    ) -> crate::Result<Option<Arc<dyn Any + Send + Sync>>> {
+        let backends = Project::auth_backends(self, context);
+
+        match context.try_database() {
+            Some(database) => Ok(Some(Arc::new(AuthState::<P::User>::new(
+                database.clone(),
+                backends,
+            )?))),
+            None if backends.is_empty() => Ok(None),
+            None => Err(Error::from(MissingDatabaseForAuth)),
+        }
+    }
+}
+
+#[cfg(feature = "db")]
+#[derive(Debug, Error)]
+#[error(
+    "the project has authentication backends, but no database; make sure the database \
+    config is set up correctly or remove the authentication backends"
+)]
+struct MissingDatabaseForAuth;
+#[cfg(feature = "db")]
+impl_into_cot_error!(MissingDatabaseForAuth);
 
 /// An alias for `ProjectContext` in appropriate phase for use with the
 /// [`Project::middlewares`] method.
@@ -466,6 +635,8 @@ pub type MiddlewareContext = ProjectContext<WithCache>;
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn middlewares(
 ///         &self,
 ///         handler: RootHandlerBuilder,
@@ -513,6 +684,8 @@ where
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -563,6 +736,8 @@ where
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -610,6 +785,8 @@ where
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -652,6 +829,8 @@ where
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -691,6 +870,8 @@ pub type WrappedMiddleware<M, S> = IntoCotError<IntoCotResponse<<M as Layer<S>>:
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn middlewares(
 ///         &self,
 ///         handler: RootHandlerBuilder,
@@ -728,6 +909,8 @@ pub struct RootHandler {
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn register_apps(&self, apps: &mut AppBuilder, context: &RegisterAppsContext) {
 ///         apps.register(MyApp);
 ///     }
@@ -769,6 +952,8 @@ impl AppBuilder {
     ///
     /// struct HelloProject;
     /// impl Project for HelloProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn register_apps(&self, apps: &mut cot::AppBuilder, _context: &RegisterAppsContext) {
     ///         apps.register(HelloApp);
     ///     }
@@ -799,6 +984,8 @@ impl AppBuilder {
     ///
     /// struct HelloProject;
     /// impl Project for HelloProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn register_apps(&self, apps: &mut cot::AppBuilder, _context: &RegisterAppsContext) {
     ///         apps.register_with_views(HelloApp, "/hello");
     ///     }
@@ -847,7 +1034,9 @@ async fn default_error_handler(error: RequestOuterError) -> crate::Result<impl I
 /// use cot::{App, Project};
 ///
 /// struct MyProject;
-/// impl Project for MyProject {}
+/// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+/// }
 ///
 /// # #[tokio::main]
 /// # async fn main() -> cot::Result<()> {
@@ -862,7 +1051,7 @@ async fn default_error_handler(error: RequestOuterError) -> crate::Result<impl I
 #[derive(Debug)]
 pub struct Bootstrapper<S: BootstrapPhase = Initialized> {
     #[debug("..")]
-    project: Box<dyn Project + Send>,
+    project: Box<dyn ErasedProject>,
     context: ProjectContext<S>,
     handler: S::RequestHandler,
     error_handler: S::ErrorHandler,
@@ -878,7 +1067,9 @@ impl Bootstrapper<Uninitialized> {
     /// use cot::{App, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -907,7 +1098,9 @@ impl<S: BootstrapPhase> Bootstrapper<S> {
     /// use cot::{App, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -916,7 +1109,7 @@ impl<S: BootstrapPhase> Bootstrapper<S> {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn project(&self) -> &dyn Project {
+    pub fn project(&self) -> &dyn ErasedProject {
         self.project.as_ref()
     }
 
@@ -929,7 +1122,9 @@ impl<S: BootstrapPhase> Bootstrapper<S> {
     /// use cot::{App, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -991,6 +1186,8 @@ impl Bootstrapper<Uninitialized> {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn config(&self, config_name: &str) -> cot::Result<ProjectConfig> {
     ///         Ok(ProjectConfig::default())
     ///     }
@@ -1024,7 +1221,9 @@ impl Bootstrapper<Uninitialized> {
     /// use cot::{Bootstrapper, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1104,7 +1303,9 @@ impl Bootstrapper<WithConfig> {
     /// use cot::{Bootstrapper, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1133,7 +1334,9 @@ impl Bootstrapper<WithConfig> {
     /// use cot::{AppBuilder, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1187,7 +1390,9 @@ impl Bootstrapper<WithApps> {
     /// use cot::{Bootstrapper, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1222,7 +1427,9 @@ impl Bootstrapper<WithApps> {
     /// use cot::{AppBuilder, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1287,7 +1494,9 @@ impl Bootstrapper<WithDatabase> {
     /// use cot::{Bootstrapper, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1321,7 +1530,9 @@ impl Bootstrapper<WithDatabase> {
     /// use cot::{AppBuilder, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1390,7 +1601,9 @@ impl Bootstrapper<WithCache> {
     /// use cot::{Bootstrapper, Project};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1415,8 +1628,12 @@ impl Bootstrapper<WithCache> {
         };
         let handler = self.project.middlewares(handler_builder, &self.context);
 
-        let auth_backend = self.project.auth_backend(&self.context);
-        let context = self.context.with_auth(auth_backend);
+        #[cfg(feature = "db")]
+        let auth_state = self.project.auth_state(&self.context)?;
+        let context = self.context.with_auth(
+            #[cfg(feature = "db")]
+            auth_state,
+        );
 
         Ok(Bootstrapper {
             project: self.project,
@@ -1437,7 +1654,9 @@ impl Bootstrapper<Initialized> {
     /// use cot::{Project, ProjectContext};
     ///
     /// struct MyProject;
-    /// impl Project for MyProject {}
+    /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
@@ -1475,7 +1694,9 @@ impl Bootstrapper<Initialized> {
 /// use cot::{Project, ProjectContext};
 ///
 /// struct MyProject;
-/// impl Project for MyProject {}
+/// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+/// }
 ///
 /// # #[tokio::main]
 /// # async fn main() -> cot::Result<()> {
@@ -1532,6 +1753,8 @@ mod sealed {
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     // `WithConfig` phase here
 ///     fn register_apps(&self, apps: &mut AppBuilder, context: &RegisterAppsContext) {
 ///         unimplemented!();
@@ -1568,8 +1791,9 @@ pub trait BootstrapPhase: sealed::Sealed {
     /// The type of the database.
     #[cfg(feature = "db")]
     type Database: Debug;
-    /// The type of the auth backend.
-    type AuthBackend;
+    /// The type of the (type-erased) authentication state.
+    #[cfg(feature = "db")]
+    type Auth: Debug;
     /// The type of the cache.
     #[cfg(feature = "cache")]
     type Cache: Debug;
@@ -1595,7 +1819,8 @@ impl BootstrapPhase for Uninitialized {
     type Router = ();
     #[cfg(feature = "db")]
     type Database = ();
-    type AuthBackend = ();
+    #[cfg(feature = "db")]
+    type Auth = ();
     #[cfg(feature = "cache")]
     type Cache = ();
 }
@@ -1620,7 +1845,8 @@ impl BootstrapPhase for WithConfig {
     type Router = ();
     #[cfg(feature = "db")]
     type Database = ();
-    type AuthBackend = ();
+    #[cfg(feature = "db")]
+    type Auth = ();
     #[cfg(feature = "cache")]
     type Cache = ();
 }
@@ -1645,7 +1871,8 @@ impl BootstrapPhase for WithApps {
     type Router = Arc<Router>;
     #[cfg(feature = "db")]
     type Database = ();
-    type AuthBackend = ();
+    #[cfg(feature = "db")]
+    type Auth = ();
     #[cfg(feature = "cache")]
     type Cache = ();
 }
@@ -1670,7 +1897,8 @@ impl BootstrapPhase for WithDatabase {
     type Router = <WithApps as BootstrapPhase>::Router;
     #[cfg(feature = "db")]
     type Database = Option<Database>;
-    type AuthBackend = <WithApps as BootstrapPhase>::AuthBackend;
+    #[cfg(feature = "db")]
+    type Auth = <WithApps as BootstrapPhase>::Auth;
     #[cfg(feature = "cache")]
     type Cache = ();
 }
@@ -1695,7 +1923,8 @@ impl BootstrapPhase for WithCache {
     type Router = <WithApps as BootstrapPhase>::Router;
     #[cfg(feature = "db")]
     type Database = <WithDatabase as BootstrapPhase>::Database;
-    type AuthBackend = <WithApps as BootstrapPhase>::AuthBackend;
+    #[cfg(feature = "db")]
+    type Auth = <WithApps as BootstrapPhase>::Auth;
     #[cfg(feature = "cache")]
     type Cache = Cache;
 }
@@ -1720,7 +1949,8 @@ impl BootstrapPhase for Initialized {
     type Router = <WithDatabase as BootstrapPhase>::Router;
     #[cfg(feature = "db")]
     type Database = <WithDatabase as BootstrapPhase>::Database;
-    type AuthBackend = Arc<dyn AuthBackend>;
+    #[cfg(feature = "db")]
+    type Auth = Option<Arc<dyn Any + Send + Sync>>;
     #[cfg(feature = "cache")]
     type Cache = <WithCache as BootstrapPhase>::Cache;
 }
@@ -1735,8 +1965,9 @@ pub struct ProjectContext<S: BootstrapPhase = Initialized> {
     router: S::Router,
     #[cfg(feature = "db")]
     database: S::Database,
+    #[cfg(feature = "db")]
     #[debug("..")]
-    auth_backend: S::AuthBackend,
+    auth: S::Auth,
     #[cfg(feature = "cache")]
     cache: S::Cache,
     #[cfg(feature = "email")]
@@ -1752,7 +1983,8 @@ impl ProjectContext<Uninitialized> {
             router: (),
             #[cfg(feature = "db")]
             database: (),
-            auth_backend: (),
+            #[cfg(feature = "db")]
+            auth: (),
             #[cfg(feature = "cache")]
             cache: (),
             #[cfg(feature = "email")]
@@ -1774,7 +2006,8 @@ impl ProjectContext<Uninitialized> {
             router: self.router,
             #[cfg(feature = "db")]
             database: self.database,
-            auth_backend: self.auth_backend,
+            #[cfg(feature = "db")]
+            auth: self.auth,
             #[cfg(feature = "cache")]
             cache: self.cache,
             #[cfg(feature = "email")]
@@ -1818,7 +2051,8 @@ impl ProjectContext<WithConfig> {
             router,
             #[cfg(feature = "db")]
             database: self.database,
-            auth_backend: self.auth_backend,
+            #[cfg(feature = "db")]
+            auth: self.auth,
             #[cfg(feature = "cache")]
             cache: self.cache,
             #[cfg(feature = "email")]
@@ -1861,7 +2095,8 @@ impl ProjectContext<WithApps> {
             router: self.router,
             #[cfg(feature = "db")]
             database,
-            auth_backend: self.auth_backend,
+            #[cfg(feature = "db")]
+            auth: self.auth,
             #[cfg(feature = "cache")]
             cache: self.cache,
             #[cfg(feature = "email")]
@@ -1877,7 +2112,8 @@ impl ProjectContext<WithDatabase> {
             config: self.config,
             apps: self.apps,
             router: self.router,
-            auth_backend: self.auth_backend,
+            #[cfg(feature = "db")]
+            auth: self.auth,
             #[cfg(feature = "db")]
             database: self.database,
             #[cfg(feature = "cache")]
@@ -1890,12 +2126,16 @@ impl ProjectContext<WithDatabase> {
 
 impl ProjectContext<WithCache> {
     #[must_use]
-    fn with_auth(self, auth_backend: Arc<dyn AuthBackend>) -> ProjectContext<Initialized> {
+    fn with_auth(
+        self,
+        #[cfg(feature = "db")] auth: Option<Arc<dyn Any + Send + Sync>>,
+    ) -> ProjectContext<Initialized> {
         ProjectContext {
             config: self.config,
             apps: self.apps,
             router: self.router,
-            auth_backend,
+            #[cfg(feature = "db")]
+            auth,
             #[cfg(feature = "db")]
             database: self.database,
             #[cfg(feature = "cache")]
@@ -1911,7 +2151,7 @@ impl ProjectContext<Initialized> {
         config: <Initialized as BootstrapPhase>::Config,
         apps: <Initialized as BootstrapPhase>::Apps,
         router: <Initialized as BootstrapPhase>::Router,
-        auth_backend: <Initialized as BootstrapPhase>::AuthBackend,
+        #[cfg(feature = "db")] auth: <Initialized as BootstrapPhase>::Auth,
         #[cfg(feature = "db")] database: <Initialized as BootstrapPhase>::Database,
         #[cfg(feature = "cache")] cache: <Initialized as BootstrapPhase>::Cache,
         #[cfg(feature = "email")] email: <Initialized as BootstrapPhase>::Email,
@@ -1922,7 +2162,8 @@ impl ProjectContext<Initialized> {
             router,
             #[cfg(feature = "db")]
             database,
-            auth_backend,
+            #[cfg(feature = "db")]
+            auth,
             #[cfg(feature = "cache")]
             cache,
             #[cfg(feature = "email")]
@@ -1956,24 +2197,35 @@ impl<S: BootstrapPhase<Router = Arc<Router>>> ProjectContext<S> {
         &self.router
     }
 }
-impl<S: BootstrapPhase<AuthBackend = Arc<dyn AuthBackend>>> ProjectContext<S> {
-    /// Returns the authentication backend for the project.
+#[cfg(feature = "db")]
+impl<S: BootstrapPhase<Auth = Option<Arc<dyn Any + Send + Sync>>>> ProjectContext<S> {
+    /// Returns the authentication backends of the project, if `U` is the
+    /// canonical user type of the project ([`Project::User`]).
+    ///
+    /// Returns [`None`] if `U` is not the user type of the project, or if the
+    /// project has no database.
     ///
     /// # Examples
     ///
     /// ```
     /// use cot::request::{Request, RequestExt};
     /// use cot::response::Response;
+    /// # use cot::test::TestUser as MyUser;
     ///
     /// async fn index(request: Request) -> cot::Result<Response> {
-    ///     let auth_backend = request.context().auth_backend();
+    ///     let auth_backends = request.context().auth_backends::<MyUser>();
     ///     // ...
     /// #    unimplemented!()
     /// }
     /// ```
     #[must_use]
-    pub fn auth_backend(&self) -> &Arc<dyn AuthBackend> {
-        &self.auth_backend
+    pub fn auth_backends<U: CanonicalUser>(&self) -> Option<&[AuthBackend<U>]> {
+        let state = self.auth.as_deref()?.downcast_ref::<AuthState<U>>()?;
+        Some(state.backends())
+    }
+
+    pub(crate) fn auth_state<U: CanonicalUser>(&self) -> Option<Arc<AuthState<U>>> {
+        Arc::clone(self.auth.as_ref()?).downcast().ok()
     }
 }
 
@@ -2327,7 +2579,7 @@ fn accepts_html(head: Option<&RequestHead>) -> bool {
 
 enum ErrorResponse {
     ErrorReturned(Error),
-    Panic(Box<dyn std::any::Any + Send>),
+    Panic(Box<dyn Any + Send>),
 }
 
 fn build_cot_error_page(error_response: ErrorResponse, diagnostics: &Diagnostics) -> Response {
@@ -2397,7 +2649,9 @@ pub(crate) fn prepare_request_for_error_handler(request_head: &mut RequestHead, 
 /// use cot::{App, Project, run_cli};
 ///
 /// struct MyProject;
-/// impl Project for MyProject {}
+/// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+/// }
 ///
 /// # #[tokio::main]
 /// # async fn main() -> cot::Result<()> {
@@ -2465,6 +2719,9 @@ mod tests {
 
     use super::*;
     use crate::auth::UserId;
+    use crate::StatusCode;
+    use crate::auth::UserId;
+    use crate::StatusCode;
     use crate::config::{SecretKey, Timeout};
     use crate::error::handler::{RequestError, RequestOuterError};
     use crate::html::Html;
@@ -2489,11 +2746,14 @@ mod tests {
     }
 
     struct TestProject;
-    impl Project for TestProject {}
+    impl Project for TestProject {
+        #[cfg(feature = "db")]
+        type User = crate::auth::NoUser;
+    }
 
     #[test]
     fn project_default_cli_metadata() {
-        let metadata = TestProject.cli_metadata();
+        let metadata = Project::cli_metadata(&TestProject);
 
         assert_eq!(metadata.name, "cot");
         assert_eq!(metadata.version, env!("CARGO_PKG_VERSION"));
@@ -2582,6 +2842,9 @@ mod tests {
     async fn project_middlewares() {
         struct TestProject;
         impl Project for TestProject {
+            #[cfg(feature = "db")]
+            type User = crate::auth::NoUser;
+
             fn config(&self, _config_name: &str) -> cot::Result<ProjectConfig> {
                 Ok(ProjectConfig::default())
             }
@@ -2628,7 +2891,7 @@ mod tests {
         let _guard = serial_guard();
 
         std::env::set_current_dir(&temp_dir).unwrap();
-        let config = TestProject.config("dev").unwrap();
+        let config = Project::config(&TestProject, "dev").unwrap();
 
         assert!(!config.debug);
         assert_eq!(config.secret_key, SecretKey::from("123abc".to_string()));
@@ -2639,7 +2902,7 @@ mod tests {
         let mut apps = AppBuilder::new();
         let context = ProjectContext::new().with_config(ProjectConfig::default());
 
-        TestProject.register_apps(&mut apps, &context);
+        Project::register_apps(&TestProject, &mut apps, &context);
 
         assert!(apps.apps.is_empty());
     }
@@ -2653,23 +2916,14 @@ mod tests {
         );
 
         let context = ProjectContext::new()
-            .with_config(
-                ProjectConfig::builder()
-                    .auth_backend(AuthBackendConfig::None)
-                    .build(),
-            )
+            .with_config(ProjectConfig::default())
             .with_apps(vec![], Arc::new(Router::empty()))
             .with_database(None)
             .with_cache(cache_memory);
 
-        let auth_backend = TestProject.auth_backend(&context);
-        assert!(
-            auth_backend
-                .get_by_id(UserId::Int(0))
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(TestProject.auth_backends(&context).is_empty());
+
+        assert!(TestProject.auth_state(&context).unwrap().is_none());
     }
 
     #[cot::test]
@@ -2680,6 +2934,9 @@ mod tests {
     async fn bootstrapper() {
         struct TestProject;
         impl Project for TestProject {
+            #[cfg(feature = "db")]
+            type User = crate::auth::NoUser;
+
             fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
                 apps.register_with_views(TestApp {}, "/app");
             }

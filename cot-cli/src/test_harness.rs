@@ -135,6 +135,8 @@ struct DefaultTestModel {{
 struct {struct_name}Project;
 
 impl Project for {struct_name}Project {{
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {{
         cot::cli::metadata!()
     }}

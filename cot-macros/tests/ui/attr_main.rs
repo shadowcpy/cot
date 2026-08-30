@@ -1,7 +1,9 @@
 use cot::Project;
 
 struct MyProject;
-impl Project for MyProject {}
+impl Project for MyProject {
+    type User = cot::auth::NoUser;
+}
 
 #[cot::main]
 fn main() -> impl Project {

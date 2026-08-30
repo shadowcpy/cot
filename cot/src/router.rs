@@ -1116,6 +1116,8 @@ enum RouteInner {
 /// struct MyProject;
 ///
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn register_apps(&self, apps: &mut AppBuilder, context: &RegisterAppsContext) {
 ///         apps.register_with_views(MyApp, "");
 ///     }

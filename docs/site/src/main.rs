@@ -11,6 +11,8 @@ use cot_site::{CotSiteApp, GuideItem, cot_site_common, cot_site_handle_error, md
 struct CotSiteProject;
 
 impl Project for CotSiteProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }

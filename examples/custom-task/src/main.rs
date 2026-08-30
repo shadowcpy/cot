@@ -45,6 +45,8 @@ impl CliTask for Frobnicate {
 struct CustomTaskProject;
 
 impl Project for CustomTaskProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }

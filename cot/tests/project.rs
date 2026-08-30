@@ -41,6 +41,8 @@ async fn cot_project_router_sub_path() {
 
     struct TestProject;
     impl Project for TestProject {
+        type User = cot::auth::NoUser;
+
         fn config(&self, config_name: &str) -> cot::Result<ProjectConfig> {
             assert!(
                 (config_name == "test"),
@@ -96,6 +98,8 @@ async fn cot_router_reverse_local() {
 
     struct TestProject;
     impl Project for TestProject {
+        type User = cot::auth::NoUser;
+
         fn config(&self, _config_name: &str) -> cot::Result<ProjectConfig> {
             Ok(ProjectConfig::default())
         }

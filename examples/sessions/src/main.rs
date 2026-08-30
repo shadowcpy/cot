@@ -78,6 +78,8 @@ impl App for HelloApp {
 struct SessionsProject;
 
 impl Project for SessionsProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }

@@ -171,6 +171,8 @@ fn project() -> impl Project {
 
     struct TestProject;
     impl Project for TestProject {
+        type User = cot::auth::NoUser;
+
         fn config(&self, _config_name: &str) -> cot::Result<ProjectConfig> {
             Ok(ProjectConfig::default())
         }

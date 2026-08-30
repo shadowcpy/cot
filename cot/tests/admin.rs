@@ -2,15 +2,19 @@ use std::error::Error;
 
 use async_trait::async_trait;
 use cot::admin::AdminApp;
-use cot::auth::user_pass::{DatabaseUser, DatabaseUserApp};
+use std::sync::Arc;
+
+use cot::auth::backend::AuthBackend;
+use cot::auth::user_pass::{PasswordUser, PasswordUserApp, PasswordUserBackend};
 use cot::cli::CliMetadata;
-use cot::config::{
-    AuthBackendConfig, DatabaseConfig, MiddlewareConfig, ProjectConfig, SessionMiddlewareConfig,
-};
+use cot::common_types::Password;
+use cot::config::{DatabaseConfig, MiddlewareConfig, ProjectConfig, SessionMiddlewareConfig};
+use cot::db::Model;
+use cot::db::migrations::SyncDynMigration;
 use cot::middleware::{AuthMiddleware, SessionMiddleware};
-use cot::project::{MiddlewareContext, RegisterAppsContext, RootHandler};
+use cot::project::{AuthBackendContext, MiddlewareContext, RegisterAppsContext, RootHandler};
 use cot::static_files::StaticFilesMiddleware;
-use cot::test::{TestServer, TestServerBuilder};
+use cot::test::{TestServer, TestServerBuilder, TestUser};
 use cot::{App, AppBuilder, Project, ProjectContext};
 use fantoccini::{Client, ClientBuilder, Locator};
 
@@ -25,8 +29,20 @@ impl App for HelloApp {
         env!("CARGO_PKG_NAME")
     }
 
+    fn migrations(&self) -> Vec<Box<SyncDynMigration>> {
+        TestUser::migrations()
+    }
+
     async fn init(&self, context: &mut ProjectContext) -> cot::Result<()> {
-        DatabaseUser::create_user(context.database(), DEFAULT_USERNAME, DEFAULT_PASSWORD).await?;
+        let mut user = TestUser::new();
+        user.insert(context.database()).await?;
+        PasswordUser::create(
+            context.database(),
+            &user,
+            DEFAULT_USERNAME,
+            &Password::new(DEFAULT_PASSWORD),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -34,6 +50,8 @@ impl App for HelloApp {
 struct AdminProject;
 
 impl Project for AdminProject {
+    type User = TestUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }
@@ -42,7 +60,6 @@ impl Project for AdminProject {
         Ok(ProjectConfig::builder()
             .debug(true)
             .database(DatabaseConfig::builder().url("sqlite::memory:").build())
-            .auth_backend(AuthBackendConfig::Database)
             .middlewares(
                 MiddlewareConfig::builder()
                     .session(SessionMiddlewareConfig::builder().secure(false).build())
@@ -52,9 +69,15 @@ impl Project for AdminProject {
     }
 
     fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
-        apps.register(DatabaseUserApp::new());
-        apps.register_with_views(AdminApp::new(), "/admin/");
+        apps.register(PasswordUserApp::<Self::User>::new());
+        apps.register_with_views(AdminApp::<Self::User>::new(), "/admin");
         apps.register(HelloApp);
+    }
+
+    fn auth_backends(&self, context: &AuthBackendContext) -> Vec<AuthBackend<TestUser>> {
+        vec![AuthBackend::UsernamePassword(Arc::new(
+            PasswordUserBackend::new(context.database().clone()),
+        ))]
     }
 
     fn middlewares(
@@ -64,7 +87,7 @@ impl Project for AdminProject {
     ) -> RootHandler {
         handler
             .middleware(StaticFilesMiddleware::from_context(context))
-            .middleware(AuthMiddleware::new())
+            .middleware(AuthMiddleware::<Self::User>::new())
             .middleware(SessionMiddleware::from_context(context))
             .build()
     }
@@ -84,52 +107,6 @@ async fn admin_e2e_login() -> Result<(), Box<dyn Error>> {
         ))
         .await?;
     assert!(welcome_message.is_displayed().await?);
-
-    driver.close().await?;
-    server.close().await;
-    Ok(())
-}
-
-#[ignore = "This test requires a Webdriver to be running"]
-#[cot::e2e_test]
-async fn admin_e2e_change_password() -> Result<(), Box<dyn Error>> {
-    const NEW_PASSWORD: &str = "test";
-
-    let server = TestServerBuilder::new(AdminProject).start().await;
-    let driver = create_webdriver().await?;
-
-    login(&server, &driver).await?;
-
-    let database_user_link = driver.find(Locator::LinkText("DatabaseUser")).await?;
-    database_user_link.click().await?;
-    let admin_user_link = driver.find(Locator::LinkText(DEFAULT_USERNAME)).await?;
-    admin_user_link.click().await?;
-    let password_form = driver.find(Locator::Id("password")).await?;
-    password_form.send_keys(NEW_PASSWORD).await?;
-    let submit_button = driver.find(Locator::Css("button[type=submit]")).await?;
-    submit_button.click().await?;
-
-    // Check the user was logged out
-    assert!(
-        driver
-            .current_url()
-            .await?
-            .as_str()
-            .ends_with("/admin/login/")
-    );
-
-    // Try to log in with the old password
-    login(&server, &driver).await?;
-    let error_alert = driver.find(Locator::Css("div.form-errors")).await?;
-    assert!(error_alert.is_displayed().await?);
-    let error_message = error_alert.text().await?.clone();
-    assert!(
-        error_message.contains("Invalid username or password"),
-        "Error message not found, actual message: {error_message}"
-    );
-
-    // Log in with the new password
-    login_with(&server, &driver, DEFAULT_USERNAME, NEW_PASSWORD).await?;
 
     driver.close().await?;
     server.close().await;

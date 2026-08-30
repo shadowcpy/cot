@@ -209,6 +209,8 @@ impl SimpleCotProject {
 }
 
 impl Project for SimpleCotProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         CliMetadata {
             name: self.name,

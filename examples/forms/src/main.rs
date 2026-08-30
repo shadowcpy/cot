@@ -9,7 +9,7 @@ use cot::db::{Auto, Database, Model, model};
 use cot::form::Form;
 use cot::form::fields::Step;
 use cot::html::Html;
-use cot::middleware::{AuthMiddleware, LiveReloadMiddleware, SessionMiddleware};
+use cot::middleware::{LiveReloadMiddleware, SessionMiddleware};
 use cot::project::{MiddlewareContext, RegisterAppsContext, RootHandler, RootHandlerBuilder};
 use cot::request::Request;
 use cot::request::extractors::{RequestForm, StaticFiles};
@@ -134,6 +134,8 @@ impl App for FormsApp {
 struct FormsProject;
 
 impl Project for FormsProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }
@@ -149,7 +151,6 @@ impl Project for FormsProject {
     fn middlewares(&self, handler: RootHandlerBuilder, context: &MiddlewareContext) -> RootHandler {
         handler
             .middleware(StaticFilesMiddleware::from_context(context))
-            .middleware(AuthMiddleware::new())
             .middleware(SessionMiddleware::from_context(context))
             .middleware(LiveReloadMiddleware::from_context(context))
             .build()

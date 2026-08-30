@@ -44,6 +44,8 @@ type LiveReloadLayerType = tower::util::Either<
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn middlewares(
 ///         &self,
 ///         handler: RootHandlerBuilder,
@@ -73,6 +75,8 @@ impl LiveReloadMiddleware {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -102,6 +106,8 @@ impl LiveReloadMiddleware {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -171,7 +177,10 @@ mod tests {
 
     async fn test_live_reload_from_context(enabled: bool) {
         struct TestProject;
-        impl Project for TestProject {}
+        impl Project for TestProject {
+            #[cfg(feature = "db")]
+            type User = crate::auth::NoUser;
+        }
 
         let middleware_config = LiveReloadMiddlewareConfig::builder()
             .enabled(enabled)

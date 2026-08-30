@@ -37,6 +37,8 @@ pub struct Session {
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn config(&self, config_name: &str) -> cot::Result<ProjectConfig> {
 ///         Ok(ProjectConfig::builder()
 ///             .database(DatabaseConfig::builder().url("sqlite::memory:").build())

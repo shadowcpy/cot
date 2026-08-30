@@ -1,12 +1,10 @@
 //! Test utilities for Cot projects.
 
-use std::any::Any;
 use std::future::poll_fn;
 use std::marker::PhantomData;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 #[cfg(feature = "cache")]
 use cot::config::CacheUrl;
 #[cfg(feature = "redis")]
@@ -21,9 +19,6 @@ use tokio::sync::oneshot;
 use tower::Service;
 use tower_sessions::MemoryStore;
 
-#[cfg(feature = "db")]
-use crate::auth::user_pass::DatabaseUserBackend;
-use crate::auth::{Auth, AuthBackend, NoAuthBackend, User, UserId};
 #[cfg(feature = "cache")]
 use crate::cache::Cache;
 #[cfg(feature = "cache")]
@@ -81,6 +76,8 @@ impl Client {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn config(&self, config_name: &str) -> cot::Result<ProjectConfig> {
     ///         Ok(ProjectConfig::default())
     ///     }
@@ -129,6 +126,8 @@ impl Client {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn config(&self, config_name: &str) -> cot::Result<ProjectConfig> {
     ///         Ok(ProjectConfig::default())
     ///     }
@@ -167,6 +166,8 @@ impl Client {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn config(&self, config_name: &str) -> cot::Result<ProjectConfig> {
     ///         Ok(ProjectConfig::default())
     ///     }
@@ -229,8 +230,10 @@ pub struct TestRequestBuilder {
     router: Option<Router>,
     session: Option<Session>,
     config: Option<Arc<ProjectConfig>>,
-    auth_backend: Option<AuthBackendWrapper>,
-    auth: Option<Auth>,
+    #[cfg(feature = "db")]
+    auth_state: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    #[cfg(feature = "db")]
+    auth: http::Extensions,
     #[cfg(feature = "db")]
     database: Option<Database>,
     form_data: Option<Vec<(String, String)>>,
@@ -243,41 +246,6 @@ pub struct TestRequestBuilder {
     email: Option<Email>,
 }
 
-/// A wrapper over an auth backend that is cloneable.
-#[derive(derive_more::Debug, Clone)]
-struct AuthBackendWrapper {
-    #[debug("..")]
-    inner: Arc<dyn AuthBackend>,
-}
-
-impl AuthBackendWrapper {
-    pub(crate) fn new<AB>(inner: AB) -> Self
-    where
-        AB: AuthBackend + 'static,
-    {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
-}
-
-#[async_trait]
-impl AuthBackend for AuthBackendWrapper {
-    async fn authenticate(
-        &self,
-        credentials: &(dyn Any + Send + Sync),
-    ) -> cot::auth::Result<Option<Box<dyn User + Send + Sync>>> {
-        self.inner.authenticate(credentials).await
-    }
-
-    async fn get_by_id(
-        &self,
-        id: UserId,
-    ) -> cot::auth::Result<Option<Box<dyn User + Send + Sync>>> {
-        self.inner.get_by_id(id).await
-    }
-}
-
 impl Default for TestRequestBuilder {
     fn default() -> Self {
         Self {
@@ -286,8 +254,10 @@ impl Default for TestRequestBuilder {
             router: None,
             session: None,
             config: None,
-            auth_backend: None,
-            auth: None,
+            #[cfg(feature = "db")]
+            auth_state: None,
+            #[cfg(feature = "db")]
+            auth: http::Extensions::new(),
             #[cfg(feature = "db")]
             database: None,
             form_data: None,
@@ -453,20 +423,44 @@ impl TestRequestBuilder {
         self
     }
 
-    /// Add an authentication backend to the request builder.
+    /// Set the canonical user type `U` and the authentication backends of the
+    /// project, as if they were returned by
+    /// [`Project::auth_backends`](crate::Project::auth_backends).
+    ///
+    /// This is what [`AuthMiddleware<U>`](crate::middleware::AuthMiddleware)
+    /// uses to authenticate requests. By default, there are no authentication
+    /// backends and no user type, so the middleware fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the names of the backends are not unique.
     ///
     /// # Examples
     ///
     /// ```
-    /// use cot::auth::NoAuthBackend;
+    /// use cot::test::TestUser;
+    /// use cot::db::Database;
     /// use cot::test::TestRequestBuilder;
     ///
+    /// # #[tokio::main]
+    /// # async fn main() -> cot::Result<()> {
+    /// let database = Database::new("sqlite::memory:").await?;
     /// let request = TestRequestBuilder::get("/")
-    ///     .auth_backend(NoAuthBackend)
+    ///     .auth_backends::<TestUser>(database, Vec::new())
     ///     .build();
+    /// # Ok(())
+    /// # }
     /// ```
-    pub fn auth_backend<T: AuthBackend + 'static>(&mut self, auth_backend: T) -> &mut Self {
-        self.auth_backend = Some(AuthBackendWrapper::new(auth_backend));
+    #[cfg(feature = "db")]
+    pub fn auth_backends<U: crate::auth::canonical::CanonicalUser>(
+        &mut self,
+        database: Database,
+        backends: Vec<crate::auth::backend::AuthBackend<U>>,
+    ) -> &mut Self {
+        self.auth_state = Some(Arc::new(
+            crate::auth::AuthState::new(database, backends)
+                .expect("Failed to create the authentication state"),
+        ));
         self
     }
 
@@ -606,7 +600,13 @@ impl TestRequestBuilder {
 
     /// Use database authentication in the test request.
     ///
-    /// Note that this calls [`Self::auth_backend`], [`Self::with_session`],
+    /// This uses `U` as the canonical user type and
+    /// [`PasswordUserBackend`](crate::auth::user_pass::PasswordUserBackend) as the
+    /// authentication backend. The migrations of `U` and of
+    /// [`PasswordUserApp<U>`](crate::auth::user_pass::PasswordUserApp) (see
+    /// [`TestDatabase::with_auth`]) must have been run on the database.
+    ///
+    /// Note that this calls [`Self::auth_backends`], [`Self::with_session`],
     /// [`Self::database`], possibly overriding any values set by you earlier.
     ///
     /// # Panics
@@ -616,38 +616,54 @@ impl TestRequestBuilder {
     /// # Examples
     ///
     /// ```
-    /// use cot::config::ProjectConfig;
-    /// use cot::test::{TestDatabase, TestRequestBuilder};
+    /// use cot::test::{TestDatabase, TestRequestBuilder, TestUser};
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
     /// let mut test_database = TestDatabase::new_sqlite().await?;
-    /// test_database.with_auth().run_migrations().await;
+    /// test_database
+    ///     .with_test_user()
+    ///     .with_auth::<TestUser>()
+    ///     .run_migrations()
+    ///     .await;
     /// let request = TestRequestBuilder::get("/")
-    ///     .with_db_auth(test_database.database())
+    ///     .with_db_auth::<TestUser>(test_database.database())
     ///     .await
     ///     .build();
     /// # Ok(())
     /// # }
     /// ```
     #[cfg(feature = "db")]
-    pub async fn with_db_auth(&mut self, db: Database) -> &mut Self {
-        self.auth_backend(DatabaseUserBackend::new(db.clone()));
+    pub async fn with_db_auth<U: crate::auth::canonical::CanonicalUser>(
+        &mut self,
+        db: Database,
+    ) -> &mut Self {
+        use crate::auth::Auth;
+        use crate::auth::backend::AuthBackend;
+        use crate::auth::user_pass::PasswordUserBackend;
+
+        let state = Arc::new(
+            crate::auth::AuthState::<U>::new(
+                db.clone(),
+                vec![AuthBackend::UsernamePassword(Arc::new(
+                    PasswordUserBackend::new(db.clone()),
+                ))],
+            )
+            .expect("Failed to create the authentication state"),
+        );
+        self.auth_state = Some(state.clone());
         self.with_session();
         self.database(db);
-        self.auth = Some(
-            Auth::new(
-                self.session.clone().expect("Session was just set"),
-                self.auth_backend
-                    .clone()
-                    .expect("Auth backend was just set")
-                    .inner,
-                crate::config::SecretKey::from("000000"),
-                &[],
-            )
-            .await
-            .expect("Failed to create Auth"),
-        );
+        let auth = Auth::new(
+            self.session.clone().expect("Session was just set"),
+            state,
+            crate::config::SecretKey::from("000000"),
+            &[],
+        )
+        .await
+        .expect("Failed to create Auth");
+        self.auth = http::Extensions::new();
+        self.auth.insert(auth);
 
         self
     }
@@ -804,18 +820,12 @@ impl TestRequestBuilder {
             unreachable!("Test request should be valid");
         };
 
-        let auth_backend = std::mem::take(&mut self.auth_backend);
-        #[expect(trivial_casts)]
-        let auth_backend = match auth_backend {
-            Some(auth_backend) => Arc::new(auth_backend) as Arc<dyn AuthBackend>,
-            None => Arc::new(NoAuthBackend),
-        };
-
         let context = ProjectContext::initialized(
             self.config.clone().unwrap_or_default(),
             Vec::new(),
             Arc::new(self.router.clone().unwrap_or_else(Router::empty)),
-            auth_backend,
+            #[cfg(feature = "db")]
+            self.auth_state.clone(),
             #[cfg(feature = "db")]
             self.database.clone(),
             #[cfg(feature = "cache")]
@@ -833,9 +843,8 @@ impl TestRequestBuilder {
             request.extensions_mut().insert(session.clone());
         }
 
-        if let Some(auth) = &self.auth {
-            request.extensions_mut().insert(auth.clone());
-        }
+        #[cfg(feature = "db")]
+        request.extensions_mut().extend(self.auth.clone());
 
         if let Some(form_data) = &self.form_data {
             if self.method != http::Method::POST {
@@ -1082,23 +1091,32 @@ impl TestDatabase {
         ))
     }
 
-    /// Add the default Cot authentication migrations to the test database.
+    /// Add the migrations of
+    /// [`PasswordUserApp<U>`](crate::auth::user_pass::PasswordUserApp) to the test
+    /// database.
     ///
     /// This is useful if you want to test something that requires
-    /// authentication.
+    /// authentication. These migrations depend on the migration that creates
+    /// the table of the canonical user `U`, so you need to add the migrations
+    /// of the app that defines `U` as well (or use [`TestUser`] and
+    /// [`Self::with_test_user`]).
     ///
     /// # Examples
     ///
     /// ```
-    /// use cot::test::{TestDatabase, TestRequestBuilder};
+    /// use cot::test::{TestDatabase, TestRequestBuilder, TestUser};
     ///
     /// # #[tokio::main]
     /// # async fn main() -> cot::Result<()> {
     /// let mut test_database = TestDatabase::new_sqlite().await?;
-    /// test_database.with_auth().run_migrations().await;
+    /// test_database
+    ///     .with_test_user()
+    ///     .with_auth::<TestUser>()
+    ///     .run_migrations()
+    ///     .await;
     ///
     /// let request = TestRequestBuilder::get("/")
-    ///     .with_db_auth(test_database.database())
+    ///     .with_db_auth::<TestUser>(test_database.database())
     ///     .await
     ///     .build();
     ///
@@ -1109,8 +1127,38 @@ impl TestDatabase {
     /// # }
     /// ```
     #[cfg(feature = "db")]
-    pub fn with_auth(&mut self) -> &mut Self {
-        self.add_migrations(cot::auth::user_pass::migrations::MIGRATIONS.to_vec());
+    pub fn with_auth<U: crate::auth::canonical::CanonicalUser>(&mut self) -> &mut Self {
+        self.migrations.extend(
+            crate::auth::user_pass::migrations::migrations::<U>()
+                .into_iter()
+                .map(MigrationWrapper::new),
+        );
+        self
+    }
+
+    /// Add the migration that creates the table of [`TestUser`] to the test
+    /// database.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cot::test::TestDatabase;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> cot::Result<()> {
+    /// let mut test_database = TestDatabase::new_sqlite().await?;
+    /// test_database.with_test_user().run_migrations().await;
+    /// # test_database.cleanup().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "db")]
+    pub fn with_test_user(&mut self) -> &mut Self {
+        self.migrations.extend(
+            TestUser::migrations()
+                .into_iter()
+                .map(MigrationWrapper::new),
+        );
         self
     }
 
@@ -1373,7 +1421,9 @@ impl DynMigration for TestMigration {
 /// use cot::test::TestServerBuilder;
 ///
 /// struct TestProject;
-/// impl cot::Project for TestProject {}
+/// impl cot::Project for TestProject {
+///     type User = cot::auth::NoUser;
+/// }
 ///
 /// #[cot::e2e_test] // note this uses "e2e_test"!
 /// async fn test_server() -> cot::Result<()> {
@@ -1400,7 +1450,9 @@ impl<T: Project + Send + 'static> TestServerBuilder<T> {
     /// use cot::test::TestServerBuilder;
     ///
     /// struct TestProject;
-    /// impl cot::Project for TestProject {}
+    /// impl cot::Project for TestProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// #[cot::e2e_test] // note this uses "e2e_test"!
     /// async fn test_server() -> cot::Result<()> {
@@ -1432,7 +1484,9 @@ impl<T: Project + Send + 'static> TestServerBuilder<T> {
     /// use cot::test::TestServerBuilder;
     ///
     /// struct TestProject;
-    /// impl cot::Project for TestProject {}
+    /// impl cot::Project for TestProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// #[cot::e2e_test] // note this uses "e2e_test"!
     /// async fn test_server() -> cot::Result<()> {
@@ -1462,7 +1516,9 @@ impl<T: Project + Send + 'static> TestServerBuilder<T> {
 /// use cot::test::TestServerBuilder;
 ///
 /// struct TestProject;
-/// impl cot::Project for TestProject {}
+/// impl cot::Project for TestProject {
+///     type User = cot::auth::NoUser;
+/// }
 ///
 /// #[cot::e2e_test] // note this uses "e2e_test"!
 /// async fn test_server() -> cot::Result<()> {
@@ -1530,7 +1586,9 @@ impl<T: Project + Send + 'static> TestServer<T> {
     /// use cot::test::TestServerBuilder;
     ///
     /// struct TestProject;
-    /// impl cot::Project for TestProject {}
+    /// impl cot::Project for TestProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// #[cot::e2e_test] // note this uses "e2e_test"!
     /// async fn test_server() -> cot::Result<()> {
@@ -1563,7 +1621,9 @@ impl<T: Project + Send + 'static> TestServer<T> {
     /// use cot::test::TestServerBuilder;
     ///
     /// struct TestProject;
-    /// impl cot::Project for TestProject {}
+    /// impl cot::Project for TestProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// #[cot::e2e_test] // note this uses "e2e_test"!
     /// async fn test_server() -> cot::Result<()> {
@@ -1601,7 +1661,9 @@ impl<T: Project + Send + 'static> TestServer<T> {
     /// use cot::test::TestServerBuilder;
     ///
     /// struct TestProject;
-    /// impl cot::Project for TestProject {}
+    /// impl cot::Project for TestProject {
+    ///     type User = cot::auth::NoUser;
+    /// }
     ///
     /// #[cot::e2e_test] // note this uses "e2e_test"!
     /// async fn test_server() -> cot::Result<()> {
@@ -1989,5 +2051,105 @@ impl TestCache {
             self.cache.clear().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "db")]
+pub use test_user::TestUser;
+
+#[cfg(feature = "db")]
+mod test_user {
+    use std::borrow::Cow;
+
+    // Importing `Auto` from `cot` instead of `crate` so that the migration
+    // generator can figure out it's an autogenerated field
+    use cot::db::Auto;
+
+    use crate::auth::canonical::CanonicalUser;
+    use crate::db::migrations::{Field, MigrationDependency, Operation, SyncDynMigration};
+    use crate::db::{DatabaseField, Identifier, model};
+
+    /// A minimal [canonical user](CanonicalUser) for tests.
+    ///
+    /// Real projects define their own canonical user model; this one exists so
+    /// that tests (of Cot itself, and of apps that are generic over the user
+    /// type) have one to use. All test users are
+    /// [admins](CanonicalUser::is_admin).
+    ///
+    /// Its table is created by the migration added with
+    /// [`TestDatabase::with_test_user`](super::TestDatabase::with_test_user).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cot::db::Model;
+    /// use cot::test::{TestDatabase, TestUser};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> cot::Result<()> {
+    /// let mut test_database = TestDatabase::new_sqlite().await?;
+    /// test_database.with_test_user().run_migrations().await;
+    ///
+    /// let mut user = TestUser::new();
+    /// user.insert(&test_database.database()).await?;
+    /// # test_database.cleanup().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[derive(Debug, Clone)]
+    #[model]
+    pub struct TestUser {
+        #[model(primary_key)]
+        id: Auto<i64>,
+    }
+
+    impl TestUser {
+        /// Creates a new, unsaved test user.
+        #[must_use]
+        pub fn new() -> Self {
+            Self { id: Auto::auto() }
+        }
+
+        /// Returns the migrations that create the table of the test user.
+        ///
+        /// These are also added by
+        /// [`TestDatabase::with_test_user`](super::TestDatabase::with_test_user).
+        #[must_use]
+        pub fn migrations() -> Vec<Box<SyncDynMigration>> {
+            vec![Box::new(Migration)]
+        }
+    }
+
+    impl Default for TestUser {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl CanonicalUser for TestUser {
+        fn display_name(&self) -> Option<Cow<'_, str>> {
+            None
+        }
+
+        fn is_admin(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    struct Migration;
+
+    impl crate::db::migrations::Migration for Migration {
+        const APP_NAME: &'static str = "cot";
+        const MIGRATION_NAME: &'static str = "m_test_user";
+        const DEPENDENCIES: &'static [MigrationDependency] = &[];
+        const OPERATIONS: &'static [Operation] = &[Operation::create_model()
+            .table_name(Identifier::new("cot__test_user"))
+            .fields(&[
+                Field::new(Identifier::new("id"), <Auto<i64> as DatabaseField>::TYPE)
+                    .auto()
+                    .primary_key(),
+            ])
+            .build()];
     }
 }

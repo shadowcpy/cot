@@ -59,6 +59,8 @@ digraph migrations {
     fontsize=12;
     margin=12;
     n3 [label="m_0001_initial"];
+    n4 [label="m_test_user"];
+    n5 [label="m_0002_password\nuser"];
   }
   subgraph cluster_3 {
     label="cot_session";
@@ -68,8 +70,10 @@ digraph migrations {
     fontcolor="#374151";
     fontsize=12;
     margin=12;
-    n4 [label="m_0001_initial"];
+    n6 [label="m_0001_initial"];
   }
 
   n0 -> n1;
+  n3 -> n5;
+  n4 -> n5;
 }

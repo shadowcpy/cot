@@ -57,6 +57,8 @@ impl App for AddApp {
 struct JsonProject;
 
 impl Project for JsonProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }

@@ -2,7 +2,12 @@
 //!
 //! This module provides an administration panel for managing models
 //! registered in the application, straight from the web interface.
+//!
+//! The models are described by the [`AdminModel`] trait. The panel itself,
+//! [`AdminApp`], requires the `db` feature, as its users log in through the
+//! authentication system.
 
+#[cfg(feature = "db")]
 mod app;
 
 use std::any::Any;
@@ -19,6 +24,7 @@ use async_trait::async_trait;
 pub use cot_macros::AdminModel;
 use derive_more::Debug;
 
+#[cfg(feature = "db")]
 pub use app::AdminApp;
 
 use crate::form::FormContext;

@@ -26,6 +26,8 @@ impl App for HelloApp {
 struct HelloProject;
 
 impl Project for HelloProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }

@@ -1,13 +1,12 @@
 ---
 source: cot-cli/tests/snapshot_testing/new/mod.rs
-assertion_line: 19
 description: "Verbosity level: debug"
 info:
   program: cot
   args:
     - new
     - "-vvvv"
-    - /tmp/cot-test-wx12rx/project
+    - /tmp/cot-test-aZwjrM/project
 ---
 success: true
 exit_code: 0
@@ -18,6 +17,7 @@ TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/t
 TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/tmp/TEMP_PATH/project/.gitignore"
 TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/tmp/TEMP_PATH/project/src/main.rs"
 TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/tmp/TEMP_PATH/project/src/migrations.rs"
+TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/tmp/TEMP_PATH/project/src/migrations/m_0001_initial.rs"
 TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/tmp/TEMP_PATH/project/static/css/main.css"
 TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/tmp/TEMP_PATH/project/templates/index.html"
 TIMESTAMP [35mTRACE[0m [2mcot_cli::new_project[0m[2m:[0m Writing file: "/tmp/TEMP_PATH/project/config/dev.toml"

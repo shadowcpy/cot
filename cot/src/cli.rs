@@ -65,6 +65,8 @@ const MIGRATION_GRAPH_DOT_OPTION: &str = "dot";
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn register_tasks(&self, cli: &mut Cli) {
 ///         cli.add_task(Frobnicate)
 ///     }
@@ -170,6 +172,8 @@ impl Cli {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn register_tasks(&self, cli: &mut Cli) {
     ///         cli.add_task(Frobnicate)
     ///     }
@@ -442,6 +446,8 @@ impl CliTask for Check {
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn register_tasks(&self, cli: &mut Cli) {
 ///         let mut group_command = CliTaskGroup::new("foo").about("Foo related commands");
 ///         group_command.add_task(Frobnicate);
@@ -526,6 +532,8 @@ impl CliTaskGroup {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn register_tasks(&self, cli: &mut Cli) {
     ///         let mut group_command = CliTaskGroup::new("foo").about("Foo related commands");
     ///         group_command.add_task(Frobnicate);
@@ -868,7 +876,10 @@ mod tests {
         }
 
         struct TestProject;
-        impl crate::Project for TestProject {}
+        impl crate::Project for TestProject {
+            #[cfg(feature = "db")]
+            type User = crate::auth::NoUser;
+        }
 
         static TASK_CALLED: AtomicBool = AtomicBool::new(false);
         TASK_CALLED.store(false, Ordering::SeqCst);
@@ -911,6 +922,9 @@ mod tests {
 
         struct TestProject;
         impl cot::Project for TestProject {
+            #[cfg(feature = "db")]
+            type User = crate::auth::NoUser;
+
             fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
                 apps.register(TestApp);
             }
@@ -958,7 +972,10 @@ mod tests {
     #[expect(clippy::future_not_send, clippy::await_holding_lock)]
     async fn test_check(config: &str) -> Result<()> {
         struct TestProject;
-        impl cot::Project for TestProject {}
+        impl cot::Project for TestProject {
+            #[cfg(feature = "db")]
+            type User = crate::auth::NoUser;
+        }
 
         let temp_dir = tempdir().unwrap();
         let config_path = temp_dir.path().join("config").clone();

@@ -55,7 +55,7 @@ pub struct ProjectConfig {
     /// # Examples
     ///
     /// ```
-    /// use cot::config::{AuthBackendConfig, ProjectConfig, SecretKey};
+    /// use cot::config::{ProjectConfig, SecretKey};
     ///
     /// let config = ProjectConfig::from_toml(
     ///     r#"
@@ -81,7 +81,7 @@ pub struct ProjectConfig {
     /// # Examples
     ///
     /// ```
-    /// use cot::config::{AuthBackendConfig, ProjectConfig, SecretKey};
+    /// use cot::config::{ProjectConfig, SecretKey};
     ///
     /// let config = ProjectConfig::from_toml(
     ///     r#"
@@ -105,7 +105,7 @@ pub struct ProjectConfig {
     /// # Examples
     ///
     /// ```
-    /// use cot::config::{AuthBackendConfig, ProjectConfig, SecretKey};
+    /// use cot::config::{ProjectConfig, SecretKey};
     ///
     /// let config = ProjectConfig::from_toml(
     ///     r#"
@@ -125,7 +125,7 @@ pub struct ProjectConfig {
     /// # Examples
     ///
     /// ```
-    /// use cot::config::{AuthBackendConfig, ProjectConfig, SecretKey};
+    /// use cot::config::{ProjectConfig, SecretKey};
     ///
     /// let config = ProjectConfig::from_toml(
     ///     r#"
@@ -137,30 +137,12 @@ pub struct ProjectConfig {
     /// # Ok::<(), cot::Error>(())
     /// ```
     pub fallback_secret_keys: Vec<SecretKey>,
-    /// The authentication backend to use.
+    /// Configuration related to the database.
     ///
     /// # Examples
     ///
     /// ```
-    /// use cot::config::{AuthBackendConfig, ProjectConfig};
-    ///
-    /// let config = ProjectConfig::from_toml(
-    ///     r#"
-    /// [auth_backend]
-    /// type = "none"
-    /// "#,
-    /// )?;
-    ///
-    /// assert_eq!(config.auth_backend, AuthBackendConfig::None);
-    /// # Ok::<(), cot::Error>(())
-    /// ```
-    pub auth_backend: AuthBackendConfig,
-    /// Database configuration.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use cot::config::{AuthBackendConfig, DatabaseUrl, ProjectConfig};
+    /// use cot::config::{DatabaseUrl, ProjectConfig};
     ///
     /// let config = ProjectConfig::from_toml(
     ///     r#"
@@ -216,7 +198,7 @@ pub struct ProjectConfig {
     /// ```
     /// use std::time::Duration;
     ///
-    /// use cot::config::{AuthBackendConfig, DatabaseUrl, ProjectConfig, StaticFilesPathRewriteMode};
+    /// use cot::config::{DatabaseUrl, ProjectConfig, StaticFilesPathRewriteMode};
     ///
     /// let config = ProjectConfig::from_toml(
     ///     r#"
@@ -412,7 +394,6 @@ impl ProjectConfigBuilder {
             register_panic_hook: self.register_panic_hook.unwrap_or(true),
             secret_key: self.secret_key.clone().unwrap_or_default(),
             fallback_secret_keys: self.fallback_secret_keys.clone().unwrap_or_default(),
-            auth_backend: self.auth_backend.unwrap_or_default(),
             #[cfg(feature = "db")]
             database: self.database.clone().unwrap_or_default(),
             #[cfg(feature = "cache")]
@@ -424,36 +405,6 @@ impl ProjectConfigBuilder {
             extra: toml::Table::default(),
         }
     }
-}
-
-/// The configuration for the authentication backend.
-///
-/// # Examples
-///
-/// ```
-/// use cot::config::AuthBackendConfig;
-///
-/// let config = AuthBackendConfig::Database;
-/// ```
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "_internal_config-docs", derive(schemars::JsonSchema))]
-#[serde(tag = "type", rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum AuthBackendConfig {
-    /// No authentication backend.
-    ///
-    /// This enables [`NoAuthBackend`](struct@cot::auth::NoAuthBackend) to be
-    /// used as the authentication backend, which effectively disables
-    /// authentication.
-    #[default]
-    None,
-    /// Database authentication backend.
-    ///
-    /// This enables
-    /// [`DatabaseUserBackend`](struct@cot::auth::user_pass::DatabaseUserBackend)
-    /// to be used as the authentication backend.
-    #[cfg(feature = "db")]
-    Database,
 }
 
 /// The configuration for the database.
@@ -2567,7 +2518,6 @@ mod tests {
             register_panic_hook = true
             secret_key = "123abc"
             fallback_secret_keys = ["456def", "789ghi"]
-            auth_backend = { type = "none" }
 
             [static_files]
             url = "/assets/"
@@ -2593,7 +2543,6 @@ mod tests {
         assert_eq!(config.fallback_secret_keys.len(), 2);
         assert_eq!(config.fallback_secret_keys[0].as_bytes(), b"456def");
         assert_eq!(config.fallback_secret_keys[1].as_bytes(), b"789ghi");
-        assert_eq!(config.auth_backend, AuthBackendConfig::None);
         assert_eq!(config.static_files.url, "/assets/");
         assert_eq!(
             config.static_files.rewrite,
@@ -2624,7 +2573,6 @@ mod tests {
         assert!(config.register_panic_hook);
         assert_eq!(config.secret_key.as_bytes(), b"");
         assert_eq!(config.fallback_secret_keys.len(), 0);
-        assert_eq!(config.auth_backend, AuthBackendConfig::None);
         assert_eq!(config.static_files.url, "/static/");
         assert_eq!(
             config.static_files.rewrite,
@@ -2737,7 +2685,6 @@ mod tests {
             register_panic_hook = true
             secret_key = "123abc"
             fallback_secret_keys = ["456def", "789ghi"]
-            auth_backend = { type = "none" }
 
             [static_files]
             url = "/assets/"

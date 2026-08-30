@@ -104,7 +104,9 @@ pub use bytes;
 /// use cot::{Bootstrapper, BoxedHandler, Project};
 ///
 /// struct MyProject;
-/// impl Project for MyProject {}
+/// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+/// }
 ///
 /// # #[tokio::main]
 /// # async fn main() -> cot::Result<()> {
@@ -140,7 +142,9 @@ pub use cot_core::{Body, Method, Result, StatusCode, error::Error, html, respons
 /// use cot::test::TestServerBuilder;
 ///
 /// struct TestProject;
-/// impl cot::Project for TestProject {}
+/// impl cot::Project for TestProject {
+///     type User = cot::auth::NoUser;
+/// }
 ///
 /// #[cot::e2e_test]
 /// async fn test_server() -> cot::Result<()> {
@@ -174,6 +178,8 @@ pub use cot_macros::e2e_test;
 ///
 /// struct HelloProject;
 /// impl Project for HelloProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
 ///         apps.register_with_views(HelloApp, "");
 ///     }

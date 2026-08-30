@@ -1,6 +1,7 @@
 //! The admin panel app and its views.
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use derive_more::Debug;
@@ -8,6 +9,7 @@ use serde::Deserialize;
 
 use super::{AdminModel, AdminModelManager, Pagination};
 use crate::auth::Auth;
+use crate::auth::canonical::CanonicalUser;
 use crate::common_types::Password;
 use crate::error::NotFound;
 use crate::form::{
@@ -21,19 +23,24 @@ use crate::router::{Router, Urls};
 use crate::static_files::StaticFile;
 use crate::{App, Error, Method, RequestHandler, Template, reverse_redirect};
 
-struct AdminAuthenticated<T, H: Send + Sync>(H, PhantomData<fn() -> T>);
+struct AdminAuthenticated<U, T, H: Send + Sync>(H, PhantomData<fn() -> (U, T)>);
 
-impl<T, H: RequestHandler<T> + Send + Sync> AdminAuthenticated<T, H> {
+impl<U, T, H: RequestHandler<T> + Send + Sync> AdminAuthenticated<U, T, H> {
     #[must_use]
     fn new(handler: H) -> Self {
         Self(handler, PhantomData)
     }
 }
 
-impl<T, H: RequestHandler<T> + Send + Sync> RequestHandler<T> for AdminAuthenticated<T, H> {
+impl<U: CanonicalUser, T, H: RequestHandler<T> + Send + Sync> RequestHandler<T>
+    for AdminAuthenticated<U, T, H>
+{
     async fn handle(&self, mut request: Request) -> crate::Result<Response> {
-        let auth: Auth = request.extract_from_head().await?;
-        if !auth.user().is_authenticated() {
+        let auth: Auth<U> = request.extract_from_head().await?;
+        let is_admin = auth
+            .user()
+            .is_some_and(|user| user.is_active() && user.is_admin());
+        if !is_admin {
             return Ok(reverse_redirect!(request, "login")?);
         }
 
@@ -72,9 +79,9 @@ struct LoginForm {
     password: Password,
 }
 
-async fn login(
+async fn login<U: CanonicalUser>(
     base_context: BaseContext,
-    auth: Auth,
+    auth: Auth<U>,
     mut request: Request,
 ) -> crate::Result<Response> {
     #[derive(Debug, Template)]
@@ -114,23 +121,25 @@ async fn login(
     Html::new(template.render()?).into_response()
 }
 
-async fn authenticate(auth: &Auth, login_form: LoginForm) -> crate::Result<bool> {
-    #[cfg(feature = "db")]
-    let user = auth
-        .authenticate(&crate::auth::user_pass::DatabaseUserCredentials::new(
-            login_form.username,
-            Password::new(login_form.password.into_string()),
-        ))
-        .await?;
+async fn authenticate<U: CanonicalUser>(
+    auth: &Auth<U>,
+    login_form: LoginForm,
+) -> crate::Result<bool> {
+    let Some(authenticated) = auth
+        .authenticate_username_password(&login_form.username, &login_form.password)
+        .await?
+    else {
+        return Ok(false);
+    };
 
-    #[cfg(not(feature = "db"))]
-    let user: Option<Box<dyn crate::auth::User + Send + Sync>> = None;
-
-    if let Some(user) = user {
-        auth.login(user).await?;
-        Ok(true)
-    } else {
-        Ok(false)
+    let user = auth.load_user(authenticated.user_id()).await?;
+    match user {
+        Some(user) if user.is_active() && user.is_admin() => {
+            auth.login_user(Arc::new(user), authenticated.backend_name())
+                .await?;
+            Ok(true)
+        }
+        _ => Ok(false),
     }
 }
 
@@ -366,6 +375,12 @@ impl FromRequestHead for AdminModelManagers {
 
 /// The admin app.
 ///
+/// `U` is the canonical user type of the project
+/// ([`Project::User`](crate::Project::User)). Only users that are
+/// [active](CanonicalUser::is_active) and [admins](CanonicalUser::is_admin)
+/// can log in to the admin panel. The admin app requires
+/// [`AuthMiddleware<U>`](crate::middleware::AuthMiddleware) to be enabled.
+///
 /// # Examples
 ///
 /// ```
@@ -375,21 +390,34 @@ impl FromRequestHead for AdminModelManagers {
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
-///         apps.register_with_views(AdminApp::new(), "/admin");
+///         apps.register_with_views(AdminApp::<Self::User>::new(), "/admin");
 ///     }
 /// }
 /// ```
-#[derive(Debug, Copy, Clone)]
-pub struct AdminApp;
+#[derive(Debug)]
+pub struct AdminApp<U> {
+    #[debug(skip)]
+    _user: PhantomData<fn() -> U>,
+}
 
-impl Default for AdminApp {
+impl<U> Clone for AdminApp<U> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<U> Copy for AdminApp<U> {}
+
+impl<U> Default for AdminApp<U> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl AdminApp {
+impl<U> AdminApp<U> {
     /// Creates an admin app instance.
     ///
     /// # Examples
@@ -401,18 +429,20 @@ impl AdminApp {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
-    ///         apps.register_with_views(AdminApp::new(), "/admin");
+    ///         apps.register_with_views(AdminApp::<Self::User>::new(), "/admin");
     ///     }
     /// }
     /// ```
     #[must_use]
     pub fn new() -> Self {
-        Self {}
+        Self { _user: PhantomData }
     }
 }
 
-impl App for AdminApp {
+impl<U: CanonicalUser> App for AdminApp<U> {
     fn name(&self) -> &'static str {
         "cot_admin"
     }
@@ -421,28 +451,28 @@ impl App for AdminApp {
         Router::with_urls([
             crate::router::Route::with_handler_and_name(
                 "/",
-                AdminAuthenticated::new(index),
+                AdminAuthenticated::<U, _, _>::new(index),
                 "index",
             ),
-            crate::router::Route::with_handler_and_name("/login/", login, "login"),
+            crate::router::Route::with_handler_and_name("/login/", login::<U>, "login"),
             crate::router::Route::with_handler_and_name(
                 "/{model_name}/",
-                AdminAuthenticated::new(view_model),
+                AdminAuthenticated::<U, _, _>::new(view_model),
                 "view_model",
             ),
             crate::router::Route::with_handler_and_name(
                 "/{model_name}/create/",
-                AdminAuthenticated::new(create_model_instance),
+                AdminAuthenticated::<U, _, _>::new(create_model_instance),
                 "create_model_instance",
             ),
             crate::router::Route::with_handler_and_name(
                 "/{model_name}/{pk}/edit/",
-                AdminAuthenticated::new(edit_model_instance),
+                AdminAuthenticated::<U, _, _>::new(edit_model_instance),
                 "edit_model_instance",
             ),
             crate::router::Route::with_handler_and_name(
                 "/{model_name}/{pk}/remove/",
-                AdminAuthenticated::new(remove_model_instance),
+                AdminAuthenticated::<U, _, _>::new(remove_model_instance),
                 "remove_model_instance",
             ),
         ])

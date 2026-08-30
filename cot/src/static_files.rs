@@ -559,6 +559,9 @@ mod tests {
 
         struct TestProject;
         impl Project for TestProject {
+            #[cfg(feature = "db")]
+            type User = crate::auth::NoUser;
+
             fn register_apps(&self, apps: &mut AppBuilder, _context: &RegisterAppsContext) {
                 apps.register(App1);
                 apps.register(App2);

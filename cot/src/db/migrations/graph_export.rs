@@ -139,7 +139,7 @@ fn group_by_app<'a>(nodes: &[Node<'a>]) -> Vec<(&'a str, Vec<usize>)> {
 
 #[cfg(test)]
 mod tests {
-    use cot::auth::user_pass::DatabaseUserApp;
+    use cot::auth::user_pass::PasswordUserApp;
     use cot::db::migrations::{
         Field, Migration, MigrationDependency, MigrationEngine, Operation, SyncDynMigration,
         wrap_migrations,
@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     use crate::App;
     use crate::db::migrations::MigrationWrapper;
-    use crate::test::TestMigration;
+    use crate::test::{TestMigration, TestUser};
 
     const SNAPSHOT_RELATIVE_PATH: &str = "../../../tests/db_testing/snapshots/migrations";
 
@@ -332,7 +332,8 @@ mod tests {
         ignore = "unsupported operation: socketpair: type 0x5 is unsupported, only SOCK_STREAM, SOCK_CLOEXEC and SOCK_NONBLOCK are allowed"
     )]
     fn test_migration_graph_unrelated_apps() {
-        let mut migrations = DatabaseUserApp::new().migrations();
+        let mut migrations = PasswordUserApp::<TestUser>::new().migrations();
+        migrations.extend(TestUser::migrations());
 
         #[expect(trivial_casts)]
         migrations.extend(wrap_migrations(&[

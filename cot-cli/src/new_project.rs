@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use cot::utils::cli::{StatusType, print_status_msg};
-use heck::ToPascalCase;
+use heck::{ToPascalCase, ToSnakeCase};
 use rand::rngs::{StdRng, SysRng};
 use rand::{Rng, SeedableRng};
 use tracing::trace;
@@ -12,13 +12,14 @@ macro_rules! project_file {
     };
 }
 
-const PROJECT_FILES: [(&str, &str); 10] = [
+const PROJECT_FILES: [(&str, &str); 11] = [
     project_file!("Cargo.toml.template"),
     project_file!("Cargo.lock.template"),
     project_file!("bacon.toml"),
     project_file!(".gitignore"),
     project_file!("src/main.rs"),
     project_file!("src/migrations.rs"),
+    project_file!("src/migrations/m_0001_initial.rs"),
     project_file!("static/css/main.css"),
     project_file!("templates/index.html"),
     project_file!("config/dev.toml"),
@@ -65,6 +66,9 @@ pub fn new_project(
 
     let project_struct_name = format!("{}Project", project_name.to_pascal_case());
     let app_name = format!("{}App", project_name.to_pascal_case());
+    // the same conversion as in the `#[model]` macro, which prefixes the table
+    // names with the snake-cased crate name
+    let project_snake_name = project_name.to_snake_case();
     let cot_source = cot_source.as_cargo_toml_source();
     let dev_secret_key = generate_secret_key();
 
@@ -87,6 +91,7 @@ pub fn new_project(
             file_path,
             content
                 .replace("{{ project_name }}", project_name)
+                .replace("{{ project_snake_name }}", &project_snake_name)
                 .replace("{{ project_struct_name }}", &project_struct_name)
                 .replace("{{ app_name }}", &app_name)
                 .replace("{{ cot_source }}", &cot_source)

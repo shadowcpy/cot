@@ -118,6 +118,8 @@ async fn send_email(
 
 struct MyProject;
 impl Project for MyProject {
+    type User = cot::auth::NoUser;
+
     fn cli_metadata(&self) -> CliMetadata {
         cot::cli::metadata!()
     }

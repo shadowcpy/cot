@@ -26,11 +26,13 @@ use crate::session::store::memory::MemoryStore;
 #[cfg(feature = "redis")]
 use crate::session::store::redis::RedisStore;
 
+#[cfg(feature = "db")]
 mod auth;
 #[cfg(feature = "live-reload")]
 mod live_reload;
 mod trailing_slash;
 
+#[cfg(feature = "db")]
 pub use auth::{AuthMiddleware, AuthService};
 
 /// Middleware that converts any error type to [`Error`](crate::Error).
@@ -50,6 +52,8 @@ pub use auth::{AuthMiddleware, AuthService};
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn middlewares(
 ///         &self,
 ///         handler: RootHandlerBuilder,
@@ -81,6 +85,8 @@ pub use cot_core::middleware::IntoCotErrorLayer;
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn middlewares(
 ///         &self,
 ///         handler: RootHandlerBuilder,
@@ -130,6 +136,8 @@ impl SessionMiddleware {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn middlewares(
     ///         &self,
     ///         handler: RootHandlerBuilder,
@@ -574,6 +582,9 @@ mod tests {
     struct TestProject;
 
     impl Project for TestProject {
+        #[cfg(feature = "db")]
+        type User = crate::auth::NoUser;
+
         fn register_apps(&self, _apps: &mut AppBuilder, _context: &RegisterAppsContext) {}
     }
 

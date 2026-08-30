@@ -32,6 +32,8 @@ use crate::response::Response;
 ///
 /// struct MyProject;
 /// impl Project for MyProject {
+///     type User = cot::auth::NoUser;
+///
 ///     fn error_handler(&self) -> DynErrorPageHandler {
 ///         DynErrorPageHandler::new(error_handler)
 ///     }
@@ -99,6 +101,8 @@ impl DynErrorPageHandler {
     ///
     /// struct MyProject;
     /// impl Project for MyProject {
+    ///     type User = cot::auth::NoUser;
+    ///
     ///     fn error_handler(&self) -> DynErrorPageHandler {
     ///         DynErrorPageHandler::new(error_handler)
     ///     }
